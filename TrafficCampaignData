@@ -1,0 +1,22 @@
+select
+        ces.metrics_day                  AS DAY
+        , ces.business_group_name
+        , ces.scheduler_name
+        , ces.page_type
+        , ces.page_ident
+        , ces.slot_name
+        , ces.campaign_name
+        , ces.campaign_id
+       , COUNT (DISTINCT ces.placement_id) AS PLACEMENTS
+       , SUM(cpa.impression_count) AS IMPRESSIONS
+       , SUM(cpa.click_count) AS CLICKS
+
+FROM primebi_andes_spectrum_ext.d_daily_content_event_source AS ces
+INNER JOIN primebi_andes_spectrum_ext.d_dly_content_purchase_attrib AS cpa ON ces.placement_id = cpa.placement_id
+    AND ces.metrics_day = cpa.metrics_day
+
+WHERE ces.marketplace_id = 1
+     AND ces.metrics_day BETWEEN to_date('20200927', 'YYYYMMDD') AND to_date('20201015', 'YYYYMMDD')
+    AND ces.business_group_name IN ('GW-Events','Cross-Site Events')
+
+GROUP BY 1,2,3,4,5,6,7,8
