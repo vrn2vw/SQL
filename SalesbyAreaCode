@@ -1,0 +1,54 @@
+WITH TEST AS (
+select
+    dmp.customer_id                     AS customer_id
+    , ad.postal_code                    AS postal_code
+    , SUM(dmp.our_price*dmp.quantity)   AS KidsClothingSpend
+
+
+FROM
+    PRIME_DDL.D_MEMBER_PURCHASES dmp
+
+LEFT JOIN prime_ddl.gs_shadow_order_detail ags /*Remove Global Store*/
+    ON dmp.customer_order_item_id = ags.customer_order_item_id
+
+LEFT JOIN prime_ddl.d_mfn_fraud mfn_fraud /*Remove Fraud*/
+    ON dmp.customer_id = mfn_fraud.customer_id
+    AND dmp.order_day::timestamp without time zone = mfn_fraud.order_day
+    AND dmp.marketplace_id = mfn_fraud.marketplace_id
+   
+
+LEFT JOIN prime_ddl.d_addresses ad
+    ON dmp.shipping_address_id = ad.address_id
+
+WHERE
+    NVL(dmp.is_liability, 'N') = 'N' -- Exclude gift card purchases
+    AND dmp.is_free_replacement = 'N' -- Exclude free replacements
+    AND dmp.order_item_level_condition NOT IN (6 /*canceled order*/, 22 /*failed fraud exam*/)
+    AND dmp.our_price > 0 -- Exclude free orders
+    AND (CASE
+            WHEN ags.customer_order_item_id IS NOT NULL THEN 'Y'::character varying
+            ELSE 'N'::character varying
+        END) = 'N' -- Exclude Global Store orders
+    and dmp.category_code in (19304900, 19303400, 19304000, 19303600, 19304800, 19303200, 19305000, 30906000, 19809800, 19809100)
+    AND (CASE
+                WHEN mfn_fraud.customer_id IS NULL THEN 'N'::character varying
+                ELSE 'Y'::character varying
+            END) = 'N' -- Excludes MFN Fraud orders
+        AND dmp.ORDER_DAY between to_date('20190701','yyyymmdd') and to_date('20190801','yyyymmdd')
+        AND dmp.MARKETPLACE_ID IN (1)
+
+GROUP BY 1,2
+)
+
+SELECT
+    customer_id
+    , postal_code                   AS SHIPPING_ZIP_CODE
+    , kidsclothingspend
+    -- , COUNT(DISTINCT customer_id) AS CUSTOMERS
+    -- , AVG(kidsclothingspend)      AS AVG_CLOTHING_SPEND_PER_CUST
+FROM TEST
+
+WHERE KidsClothingSpend > 75
+    AND KidsClothingSpend < 2500
+   
+ORDER BY kidsclothingspend DESC
