@@ -1,0 +1,107 @@
+/*+ ETLM {
+    depend:{
+        add:[
+            {name:"rs_coop_ddl.COOP_DSI_CALCULATION_RESULTS"}
+            ]
+		, replace:[
+      {name:"booker.O_COOP_AGREEMENTS"}
+                ]
+           }
+}*/
+
+WITH PRIMENOW AS(
+SELECT 
+'PRIMENOW.COM'																AS CONTRA_COGS_MARKETPLACE
+, DATE_TRUNC('month',coop.receive_day)                                         AS MONTH
+,coop.FUNDING_TYPE_NAME
+, CASE WHEN coop.signed_flag = 1 THEN 'YES'
+    ELSE 'NO'  END              											AS SIGNED_FLAG
+, NVL(coop.f3_vertical, 'NULL')												AS F3_VERTICAL
+, NVL(coop.brand_code, 'NULL')												AS BRAND_CODE
+, sum (dsi.QUANTITY_UNPACKED)                                                AS INBOUND_UNITS
+, SUM (dsi.QUANTITY_UNPACKED*dsi.COST)                                      AS NET_RECEIPTS
+, SUM(coop.coop_amount)														AS COOP_ACCRUALS_DA
+
+
+FROM f3_booker.d_distributor_shipment_items dsi
+
+LEFT JOIN (SELECT b.product_group_id, b.FUNDING_TYPE_NAME, b.marketplace_id, b.agreement_title, b.signed_flag,  a.receive_day, a.is_valid,
+					a.agreement_id, a.vendor_code, a.brand_code, a.manufacturer_code, a.coop_amount, a.distributor_shipment_item_id, a.region_id, f3.f3_vertical
+			FROM rs_coop_ddl.COOP_DSI_CALCULATION_RESULTS a
+			LEFT JOIN booker.O_COOP_AGREEMENTS b ON a.AGREEMENT_ID = b.AGREEMENT_ID
+			LEFT JOIN f3edw.DIM_ASIN f3 
+				ON a.ASIN = f3.ASIN 
+				AND a.REGION_ID = f3.REGION_ID 
+				AND a.ASIN_MARKETPLACE_ID = f3.MARKETPLACE_ID
+			) coop
+			ON dsi.DISTRIBUTOR_SHIPMENT_ITEM_ID = coop.DISTRIBUTOR_SHIPMENT_ITEM_ID
+			AND dsi.REGION_ID = coop.REGION_ID
+
+WHERE coop.REGION_ID = 1
+AND coop.RECEIVE_DAY BETWEEN TO_DATE('{RUN_DATE_YYYYMMDD}','yyyymmdd')-70 AND TO_DATE('{RUN_DATE_YYYYMMDD}','yyyymmdd')
+AND coop.IS_VALID = 'Y'
+AND UPPER(coop.FUNDING_TYPE_NAME) IN ('DAMAGE ALLOWANCE','ACCRUAL')
+AND coop.marketplace_id = 1338980
+
+GROUP BY
+DATE_TRUNC('month',coop.receive_day) 
+, coop.FUNDING_TYPE_NAME
+, CASE WHEN coop.signed_flag = 1 THEN 'YES'
+    ELSE 'NO'  END 
+, NVL(coop.f3_vertical, 'NULL')												
+, NVL(coop.brand_code, 'NULL')												
+
+)
+
+, FRESH AS(
+SELECT 
+'AMAZON.COM'																AS CONTRA_COGS_MARKETPLACE
+, DATE_TRUNC('month',coop.receive_day)                                         AS MONTH
+,coop.FUNDING_TYPE_NAME
+, CASE WHEN coop.signed_flag = 1 THEN 'YES'
+    ELSE 'NO'  END              											AS SIGNED_FLAG
+, NVL(coop.f3_vertical, 'NULL')												AS F3_VERTICAL
+, NVL(coop.brand_code, 'NULL')												AS BRAND_CODE
+, sum (dsi.QUANTITY_UNPACKED)                                                AS INBOUND_UNITS
+, SUM (dsi.QUANTITY_UNPACKED*dsi.COST)                                      AS NET_RECEIPTS
+, SUM(coop.coop_amount)														AS COOP_ACCRUALS_DA
+
+FROM f3_booker.d_distributor_shipment_items dsi
+
+LEFT JOIN (SELECT b.product_group_id, b.FUNDING_TYPE_NAME, b.marketplace_id, b.agreement_title, b.signed_flag,  a.receive_day, a.is_valid,
+					a.agreement_id, a.vendor_code, a.brand_code, a.manufacturer_code, a.coop_amount, a.distributor_shipment_item_id, a.region_id, f3.f3_vertical
+			FROM rs_coop_ddl.COOP_DSI_CALCULATION_RESULTS a
+			LEFT JOIN booker.O_COOP_AGREEMENTS b ON a.AGREEMENT_ID = b.AGREEMENT_ID
+			LEFT JOIN f3edw.DIM_ASIN f3 
+				ON a.ASIN = f3.ASIN 
+				AND a.REGION_ID = f3.REGION_ID 
+				AND a.ASIN_MARKETPLACE_ID = f3.MARKETPLACE_ID
+			) coop
+			ON dsi.DISTRIBUTOR_SHIPMENT_ITEM_ID = coop.DISTRIBUTOR_SHIPMENT_ITEM_ID
+			AND dsi.REGION_ID = coop.REGION_ID
+
+	
+WHERE coop.REGION_ID = 1
+AND coop.RECEIVE_DAY BETWEEN TO_DATE('{RUN_DATE_YYYYMMDD}','yyyymmdd')-70 AND TO_DATE('{RUN_DATE_YYYYMMDD}','yyyymmdd')
+AND coop.IS_VALID = 'Y'
+AND UPPER(coop.FUNDING_TYPE_NAME) IN ('DAMAGE ALLOWANCE','ACCRUAL')
+AND coop.marketplace_id = 1
+AND coop.product_group_id IN (195, 540, 541, 542, 543)
+
+
+GROUP BY
+DATE_TRUNC('month',coop.receive_day) 
+, coop.FUNDING_TYPE_NAME
+, CASE WHEN coop.signed_flag = 1 THEN 'YES'
+    ELSE 'NO'  END 
+, NVL(coop.f3_vertical, 'NULL')												
+, NVL(coop.brand_code, 'NULL')												
+)
+
+, COOP AS (
+SELECT * FROM FRESH
+UNION ALL
+SELECT * FROM PRIMENOW
+)
+
+SELECT * FROM COOP
