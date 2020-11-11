@@ -1,0 +1,132 @@
+/*+ ETLM {
+    depend:{
+		replace:[
+      {name:"f3_booker.d_unified_cust_shipment_items"}
+                ]
+           }
+}*/
+
+WITH mlc as (
+    select distinct
+        country
+        , marketplace_id
+        , city
+        , merchant_customer_id
+        , case when merchant_name='WholeFoodsMarket' then 'WFM' else owner end as owner
+        , launch_day
+        , max(merchant_name) as merchant_name
+        , max(store_fc) as store_id
+    FROM houdini_ddl.d_merchant_launch_class 
+    WHERE region_id IN (1)
+    GROUP BY country
+        , marketplace_id
+        , city
+        , merchant_customer_id
+        , case when merchant_name='WholeFoodsMarket' then 'WFM' else owner end 
+        , launch_day
+)
+
+, PN as ( Select 
+f3.f3_vertical                                      AS VERTICAL
+, f3.f3_category_group                               AS CATEGORY
+, f3.asin                                           AS ASIN
+, ducsi.warehouse_id                                AS FC
+, f3.item_name                                      AS ITEM_NAME
+, sum(ducsi.our_price*ducsi.shipped_units_orig)     AS OPS
+, sum(ducsi.item_fifo_cost*ducsi.shipped_units_orig)     AS PCOGS
+, sum(ducsi.shipped_units_orig)                     AS UNITS
+
+from f3_booker.d_unified_cust_shipment_items ducsi
+LEFT JOIN f3edw.DIM_ASIN f3
+    on f3.asin = ducsi.asin
+    and f3.marketplace_id = ducsi.marketplace_id
+LEFT JOIN mlc 
+	 ON mlc.marketplace_id = ducsi.marketplace_id
+	 and mlc.merchant_customer_id = ducsi.merchant_customer_id
+
+where ducsi.region_id = 1
+and ducsi.ship_day between to_date('{RUN_DATE_YYYYMMDD}','YYYYMMDD')-7 and to_date('{RUN_DATE_YYYYMMDD}','YYYYMMDD')
+and ducsi.program = 'PRIME_NOW'
+and mlc.owner = 'RETAIL'
+
+
+GROUP BY
+f3_vertical
+, f3.f3_category_group  
+, f3.asin 
+, ducsi.warehouse_id       
+, f3.item_name
+)
+
+, RestF3 as (Select 
+f3.f3_vertical                                      AS VERTICAL
+, f3.f3_category_group                          AS CATEGORY
+, f3.asin                                           AS ASIN
+, ducsi.warehouse_id								AS FC             
+, f3.item_name                                      AS ITEM_NAME
+, sum(ducsi.our_price*ducsi.shipped_units_orig)     AS OPS
+, sum(ducsi.item_fifo_cost*ducsi.shipped_units_orig)     AS PCOGS
+, sum(ducsi.shipped_units_orig)                     AS UNITS
+
+
+from f3_booker.d_unified_cust_shipment_items ducsi
+LEFT JOIN f3edw.DIM_ASIN f3
+    on f3.asin = ducsi.asin
+    and f3.marketplace_id = ducsi.marketplace_id
+
+where ducsi.region_id = 1
+and ducsi.ship_day between to_date('{RUN_DATE_YYYYMMDD}','YYYYMMDD')-7 and to_date('{RUN_DATE_YYYYMMDD}','YYYYMMDD')
+and ducsi.program IN ('FRESH','ULTRA_FAST')
+
+GROUP BY
+f3_vertical
+, f3.f3_category_group
+, f3.asin 
+, ducsi.warehouse_id
+, f3.item_name
+)
+
+, CONSOLIDATED AS (
+SELECT * from PN
+UNION ALL
+SELECT * FROM RestF3
+)
+
+, FINAL AS(
+select 
+VERTICAL
+, CATEGORY
+, ASIN
+, FC
+, ITEM_NAME
+, SUM(OPS - PCOGS)          AS PPP
+, SUM(OPS - PCOGS)/SUM(OPS)  AS PPM
+, SUM(OPS)					AS OPS
+, SUM(UNITS) 				AS UNITS
+, SUM(OPS) / SUM(UNITS)		AS ASP
+, SUM(PCOGS)/ SUM(UNITS)	AS ACU
+
+
+from CONSOLIDATED
+    
+WHERE UNITS > 0
+    AND OPS > 0
+    and VERTICAL = 'F3G'
+
+GROUP BY 
+VERTICAL
+, CATEGORY
+, ASIN
+, FC
+, ITEM_NAME
+
+)
+
+SELECT 
+ROW_NUMBER() OVER(ORDER BY PPP ASC) AS RANK
+, *
+
+FROM FINAL
+
+
+
