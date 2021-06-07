@@ -1,0 +1,138 @@
+WITH customer_base AS (
+SELECT marketplace_id,
+       snapshot_date,
+       customer_id,
+       wbr_state,
+       wbr_state_subcategory,
+       is_active_in_t7,
+       surface_level_1,
+       CASE WHEN surface_level_2 IN ('Voice|', 'Voice|Alexa_App|', 'Alexa_App|', 'WFM|', 'mShop|') THEN surface_level_2
+            ELSE 'OTHER' END AS surface_level_2,
+        prime_segment_flag, 
+        f3_purchase_in_t12m_flag,
+       period_add_cnt,
+       period_usage_intensity,
+       row_number() over (partition BY marketplace_id,customer_id
+                          ORDER BY snapshot_date) AS row_rank
+FROM work_area.shopping_list_customer_engagement_state_v2_06032021
+WHERE upper(period) = 'MONTHLY'
+    and marketplace_id = 1
+    -- AND period_usage_intensity < 7
+)
+
+
+, customer_movement_cid AS
+  (SELECT DISTINCT c.marketplace_id,
+                   c.snapshot_date,
+                   c.is_active_in_t7,
+                   c.wbr_state AS current_month_cohort,
+                   case when p.wbr_state is null then 'Unaware' else p.wbr_state end AS last_month_cohort,
+                   c.wbr_state_subcategory as current_month_cohort_sub,
+                   p.wbr_state_subcategory as last_month_cohort_sub,
+                   c.customer_id AS current_month_cid,
+                   p.customer_id AS last_month_cid,
+                   p.surface_level_1 as p_surface_level_1,
+                   p.surface_level_2 as p_surface_level_2,
+                   c.surface_level_1 as c_surface_level_1,
+                   c.surface_level_2 as c_surface_level_2,
+                   c.prime_segment_flag, 
+                    c.f3_purchase_in_t12m_flag,
+                   CASE WHEN p.period_add_cnt = p.period_usage_intensity THEN 'ADD-ONLY'
+                        ELSE 'NOT ADD-ONLY' END AS USAGE_STATUS, 
+                   CASE 
+                        WHEN c.period_add_cnt >=2 AND c.period_add_cnt <=5 THEN 2
+                        WHEN c.period_add_cnt >=6 AND c.period_add_cnt <=10 THEN 6
+                        WHEN c.period_add_cnt >=11 AND c.period_add_cnt <=20 THEN 11
+                        WHEN c.period_add_cnt >20  THEN 20
+                        ELSE c.period_add_cnt END AS C_PERIOD_ADD,
+                    CASE 
+                        WHEN c.period_usage_intensity >=2 AND c.period_usage_intensity <=5 THEN 2
+                        WHEN c.period_usage_intensity >=6 AND c.period_usage_intensity <=10 THEN 6
+                        WHEN c.period_usage_intensity >=11 AND c.period_usage_intensity <=20 THEN 11
+                        WHEN c.period_usage_intensity >20  THEN 20
+                        ELSE c.period_usage_intensity END AS C_USAGE_RATE,
+						
+                    CASE 
+                        WHEN p.period_add_cnt >=2 AND p.period_add_cnt <=5 THEN 2
+                        WHEN p.period_add_cnt >=6 AND p.period_add_cnt <=10 THEN 6
+                        WHEN p.period_add_cnt >=11 AND p.period_add_cnt <=20 THEN 11
+                        WHEN p.period_add_cnt >20  THEN 20
+                        ELSE p.period_add_cnt END AS P_PERIOD_ADD,
+
+                    CASE 
+                        WHEN p.period_usage_intensity >=2 AND p.period_usage_intensity <=5 THEN 2
+                        WHEN p.period_usage_intensity >=6 AND p.period_usage_intensity <=10 THEN 6
+                        WHEN p.period_usage_intensity >=11 AND p.period_usage_intensity <=20 THEN 11
+                        WHEN p.period_usage_intensity >20  THEN 20
+                        ELSE p.period_usage_intensity END AS P_USAGE_RATE
+                    /*
+                   c.period_add_cnt AS C_PERIOD_ADD,
+                   c.period_usage_intensity AS C_USAGE_RATE,
+                   p.period_add_cnt AS P_PERIOD_ADD,
+                   p.period_usage_intensity AS P_USAGE_RATE
+                   */
+   FROM customer_base AS c
+   LEFT OUTER JOIN customer_base AS p ON c.customer_id = p.customer_id
+   AND c.marketplace_id=p.marketplace_id
+   AND c.row_rank = p.row_rank+1
+   
+   -- WHERE p.wbr_state_subcategory LIKE ('%Settling%')
+            )
+
+, rate_base_1 AS (
+                                SELECT 
+                                       'US' as reporting_country,
+                                       'MONTHLY' AS REPORTING_PERIOD,
+                                       to_date(SNAPSHOT_DATE,'YYYY/MM/DD') AS REPORTING_TIME,
+                                       ISNULL(p_surface_level_1,'OTHER') AS p_surface_level_1,
+                                       ISNULL(p_surface_level_2,'OTHER') AS p_surface_level_2,
+                                       ISNULL(c_surface_level_2,'OTHER') AS c_surface_level_2,
+                                       ISNULL(prime_segment_flag,'UNKNOWN') AS prime_segment_flag, 
+                                        f3_purchase_in_t12m_flag,
+                                        -- C_PERIOD_ADD, 
+                                        -- C_USAGE_RATE,    
+                                        -- P_PERIOD_ADD, 
+                                        -- P_USAGE_RATE, 
+                                        USAGE_STATUS, 
+                                            
+                                       /*MAU*/
+                                       count(distinct case when current_month_cohort in ('Settling','Settled') then CURRENT_MONTH_CID end) as num_mau_current_month,
+                                       count(distinct case when current_month_cohort in ('Settled') then CURRENT_MONTH_CID end) as num_settled_current_month,
+                                       count(distinct case when current_month_cohort in ('Settling') then CURRENT_MONTH_CID end) as num_settling_current_month,
+                                       count(distinct case when current_month_cohort in ('Aware') and current_month_cohort_sub = 'Aware - Active in Period' /*last_month_cohort_sub*/  then CURRENT_MONTH_CID end) as num_aware_current_month,
+                                       /*ACQUISITION RATE:= (Number of customers taking 1st add to list HVA) / (Number of customers taking 1st add to list HVA + Customers view list + FTUX event+ No. of customers viewed SL on Catapult )*/
+                                       count(DISTINCT CASE WHEN current_month_cohort in ('Settling','Settled') 
+                                       AND last_month_cohort IN ('Aware','Unaware') THEN CURRENT_MONTH_CID END) AS num_customer_take_1st_add_to_list_hva_in_current_month,
+                                       -- customer who view list in current months and stayed aware
+                                       count(DISTINCT CASE WHEN current_month_cohort in ('Aware') and current_month_cohort_sub = 'Aware - Active in Period' THEN CURRENT_MONTH_CID END) AS num_customers_viewed_list_with_no_add,
+                                       /*ACTIVATION*/
+                                       count(DISTINCT CASE WHEN current_month_cohort = 'Settled' AND last_month_cohort IN ('Settling','Aware','Unaware','Lapsed') THEN CURRENT_MONTH_CID END) AS num_customer_total_activated,
+                                       count(DISTINCT CASE WHEN current_month_cohort = 'Settled' AND last_month_cohort IN ('Settling','Aware','Unaware') THEN CURRENT_MONTH_CID END) AS num_customer_newly_activated,
+                                       count(DISTINCT CASE WHEN current_month_cohort = 'Settled' AND last_month_cohort IN ('Lapsed') THEN CURRENT_MONTH_CID END) AS num_reactivated_lapsed_to_settled_this_month,
+                                       count(DISTINCT CASE WHEN current_month_cohort = 'Settled' AND last_month_cohort IN ('Unaware','Aware') THEN CURRENT_MONTH_CID END) AS num_customer_unaware_aware_to_settled_this_month,
+                                       count(DISTINCT CASE WHEN current_month_cohort = 'Settled' AND last_month_cohort IN ('Settling') THEN CURRENT_MONTH_CID END) AS num_customer_settling_to_settled_this_month,
+                                       count(DISTINCT CASE WHEN last_month_cohort = 'Settling' THEN CURRENT_MONTH_CID END) AS total_settling_customer_last_month,
+                                       /*SETTLED RETENTION_RATE*/
+                                       count(DISTINCT CASE WHEN current_month_cohort = 'Settled' AND last_month_cohort IN ('Settled') THEN CURRENT_MONTH_CID END) AS num_settled_customer_retained_this_month,
+                                       count(DISTINCT CASE WHEN current_month_cohort = 'Settled' AND last_month_cohort IN ('Settled') and current_month_cohort_sub ilike '%Pinnacle%' THEN CURRENT_MONTH_CID END) AS num_settled_pinnacle_retained_this_month,
+                                       count(DISTINCT CASE WHEN current_month_cohort = 'Settled' AND last_month_cohort IN ('Settled') and current_month_cohort_sub ilike '%Risk%' THEN CURRENT_MONTH_CID END) AS num_settled_at_risk_retained_this_month,
+                                       count(DISTINCT CASE WHEN last_month_cohort IN ('Settled') THEN CURRENT_MONTH_CID END) AS total_settled_customer_last_month,
+                                       
+                                       /*Settling Retention Rate*/
+                                       count(DISTINCT CASE WHEN current_month_cohort in ('Settling') AND last_month_cohort IN ('Settling') THEN CURRENT_MONTH_CID END) AS num_settling_customer_remained_settling_this_month,
+                                       /*Re-Activation*/
+                                       count(DISTINCT CASE WHEN current_month_cohort in ('Settling')
+                                             AND last_month_cohort IN ('Lapsed') THEN CURRENT_MONTH_CID END) AS num_reacquired_lapsed_to_settling_this_month, 
+                                       count(distinct case when last_month_cohort  = 'Lapsed' then last_month_cid end ) as num_lapsed_last_month,     
+                                       /*Monthly Lapsed Rate - MGL*/
+                                       count(DISTINCT CASE WHEN current_month_cohort in ('Lapsed') AND last_month_cohort IN ('Settling') THEN last_month_cid END) AS num_settling_to_lapsed_this_month,
+                                       count(DISTINCT CASE WHEN current_month_cohort in ('Lapsed') AND last_month_cohort IN ('Settled') THEN last_month_cid END) AS num_settled_to_lapsed_this_month,
+                                       count(DISTINCT CASE WHEN current_month_cohort in ('Lapsed') AND last_month_cohort like '%Set%' THEN last_month_cid END) AS num_active_to_lapsed_this_month,
+                                       count(DISTINCT CASE WHEN  last_month_cohort like '%Set%' THEN last_month_cid END) AS num_active_last_month
+                                FROM customer_movement_cid
+                                GROUP BY 1,2,3,4,5,6,7,8,9)
+
+
+
+
+select * from rate_base_1
